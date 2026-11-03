@@ -1,0 +1,62 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+  <meta name="theme-color" content="#9fd8ff">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <title>浮島樂園</title>
+  <link rel="stylesheet" href="park.css">
+</head>
+<body>
+  <canvas id="park"></canvas>
+
+  <div id="hud">
+    <div id="res"></div>
+    <div id="guests" class="chip">👥 <b>0</b></div>
+  </div>
+
+  <div id="hint" hidden></div>
+  <div id="toast"></div>
+
+  <button id="btn-mode" class="pill">🔧 試驗場</button>
+  <button id="btn-mute" aria-label="切換聲音">🔊</button>
+
+  <div id="panel" class="sheet">
+    <div class="sheet-head">
+      <div id="p-icon" class="sheet-icon"></div>
+      <div class="sheet-title">
+        <h3 id="p-name"></h3>
+        <p id="p-sub"></p>
+      </div>
+      <button id="p-close" aria-label="關閉">✕</button>
+    </div>
+    <div id="p-stats" class="stats"></div>
+    <div id="p-actions" class="actions"></div>
+  </div>
+
+  <div id="movebar">
+    <p id="mv-text"></p>
+    <p class="mv-help">拖曳設施換位置，拖曳空白處移動畫面</p>
+    <div class="mv-btns">
+      <button id="mv-cancel" class="pill ghost small">✕ 取消</button>
+      <button id="mv-ok" class="pill blue small">✓ 放這裡</button>
+    </div>
+  </div>
+
+  <div id="modal" class="modal">
+    <div class="card">
+      <h3 id="m-title"></h3>
+      <div id="m-body"></div>
+      <button id="m-ok" class="pill">好</button>
+    </div>
+  </div>
+
+  <div id="lab">
+    <iframe id="lab-frame" title="試運轉"></iframe>
+    <button id="lab-quit" class="pill small">✕ 結束試運轉</button>
+  </div>
+
+  <script type="module" src="src/park.js"></script>
+</body>
+</html>

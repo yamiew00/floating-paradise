@@ -1,0 +1,41 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+  <meta name="theme-color" content="#0b0e20">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <title>稜光衝刺</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <canvas id="game"></canvas>
+  <div id="safe"></div>
+
+  <div id="title" class="overlay show">
+    <h1>稜光衝刺</h1>
+    <p class="sub">PRISM DASH</p>
+    <ul class="how">
+      <li>按住往後拉，瞄準時時間會變慢</li>
+      <li>放開就衝刺，撞穿敵人</li>
+      <li>擊倒敵人會回充衝刺，連擊分數加倍</li>
+    </ul>
+    <button id="btn-start" class="btn">開始</button>
+    <p id="title-best" class="muted"></p>
+  </div>
+
+  <div id="over" class="overlay">
+    <h2>倒下了</h2>
+    <p id="over-best" class="new-best" hidden>新紀錄！</p>
+    <div id="over-score" class="score-big">0</div>
+    <p id="over-detail" class="muted"></p>
+    <button id="btn-revive" class="btn alt">看廣告復活</button>
+    <button id="btn-retry" class="btn">再玩一次</button>
+    <button id="btn-lab" class="btn alt" hidden>完成試運轉</button>
+  </div>
+
+  <button id="btn-mute" aria-label="切換聲音">🔊</button>
+
+  <script type="module" src="src/main.js"></script>
+</body>
+</html>

@@ -1,0 +1,53 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+  <meta name="theme-color" content="#8fc8f5">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <title>鋼球滑道</title>
+  <link rel="stylesheet" href="ball.css">
+</head>
+<body>
+  <canvas id="ball"></canvas>
+
+  <div id="hud">
+    <div class="row">
+      <span id="h-level" class="tag">第 1 關</span>
+      <span id="h-shield" class="tag"></span>
+      <span id="h-gems" class="tag">💎 0/0</span>
+    </div>
+    <div id="h-bar"><div id="h-fill"></div><div id="h-dot"></div></div>
+  </div>
+
+  <div id="ready" class="panel show">
+    <p class="kicker">鋼球滑道</p>
+    <h1 id="r-title">第 1 關</h1>
+    <p id="r-goal" class="muted">滾到終點就過關</p>
+    <p class="hint">手指按住<b>左右滑動</b>操控鋼球<br>收集 💎 拿星星</p>
+    <button id="btn-go" class="btn">開始</button>
+  </div>
+
+  <div id="pass" class="panel">
+    <p class="kicker" id="p-level"></p>
+    <h1>過關！</h1>
+    <div id="p-stars" class="stars"><span>★</span><span>★</span><span>★</span></div>
+    <p id="p-gems" class="muted"></p>
+    <button id="btn-next" class="btn">下一關</button>
+    <button id="btn-done1" class="btn ghost" hidden>完成試運轉</button>
+  </div>
+
+  <div id="fail" class="panel">
+    <p class="kicker" id="f-level"></p>
+    <h1>撞到了！</h1>
+    <p id="f-progress" class="muted"></p>
+    <button id="btn-cont" class="btn alt">看廣告續玩（+1 護盾）</button>
+    <button id="btn-retry" class="btn">再試一次</button>
+    <button id="btn-done2" class="btn ghost" hidden>完成試運轉</button>
+  </div>
+
+  <button id="btn-mute" aria-label="切換聲音">🔊</button>
+
+  <script type="module" src="src/ball.js"></script>
+</body>
+</html>

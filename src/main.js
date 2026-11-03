@@ -28,6 +28,14 @@ const ENEMY = {
   shell: { r: 0.40, hp: 2, score: 300, color: '#4fe39a', dark: '#228a5a' },
 };
 
+// ---- 關卡模式（依「小遊戲通用規則」）----
+// 網址有 level 參數就是關卡模式（試驗場用 iframe 載入 index.html?mode=lab&level=3&shield=1&boost=0&fails=0）；
+// 沒有就是原本的無盡模式，當作自由練習。
+const DASHES_PER_BUFF = 3;          // 設施每升一級，每關多幾次衝刺
+const EASE_AFTER = 3;               // 同一關失敗幾次後悄悄降低難度
+const OUT_GRACE = 1.0;              // 衝刺用完、球停下來後再等幾秒才判定失敗
+const CONT_DASHES = 5;              // 看廣告續玩給的衝刺次數
+
 const TILE_A = [36, 48, 94], TILE_B = [44, 58, 110], GLOW = [127, 246, 255];
 const SIDE_L = [26, 33, 74], SIDE_R = [18, 23, 56];
 const FONT = 'system-ui, -apple-system, "PingFang TC", "Microsoft JhengHei", sans-serif';
@@ -91,10 +99,83 @@ let banner = null, shakeX = 0, shakeY = 0, camLead = 0, titleRingT = 0;
 const tileGlow = new Float32Array(N * N);
 const motes = Array.from({ length: 36 }, () => ({ x: Math.random(), y: Math.random(), s: rand(0.6, 2), v: rand(0.005, 0.02) }));
 
+// ================= 關卡 =================
+const params = new URLSearchParams(location.search);
+const labMode = params.get('mode') === 'lab';
+const levelMode = params.has('level');
+const buffLv = Number(params.get('shield')) || 0;   // 設施等級加成
+let boostHp = Number(params.get('boost')) || 0;     // 道具：開局多 1 顆心，只用在第一次挑戰
+let levelN = Math.max(1, Number(params.get('level')) || 1);
+let fails = Number(params.get('fails')) || 0;
+let LV = null;                                      // 目前關卡的設定
+let dashesLeft = Infinity, maxHp = MAX_HP, hpLost = 0, levelT = 0, outT = 0;
+let won = false, reported = true, continued = false, failReason = '';
+
+// 同一關每次產生的都一樣（固定種子）
+function rng(seed) {
+  let a = seed >>> 0;
+  return () => {
+    a = (a + 0x6d2b79f5) | 0;
+    let t = Math.imul(a ^ (a >>> 15), 1 | a);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+function makeLevel(n, ease) {
+  const r = rng(n * 104729 + 7);
+  // 難度呈鋸齒狀：每 5 關一個難關，後面兩關放鬆一點
+  const tier = n % 5 === 0 ? 3 : n % 5 === 1 && n > 1 ? -2 : n % 5 === 2 && n > 2 ? -1 : 0;
+  const d = Math.max(0, n - 1 + tier - (ease ? 3 : 0));
+  // 新敵人一關一關加進來，剛解鎖的那種出現得比較多
+  const types = ['blob'];
+  if (n >= 2) types.push('horn');
+  if (n >= 4) types.push('eye');
+  if (n >= 6) types.push('shell');
+  const pick = () => (r() < 0.35 ? types[types.length - 1] : types[(r() * types.length) | 0]);
+  const goal = n % 5 === 0 ? 'survive' : n >= 8 && n % 5 === 3 ? 'combo' : 'clear';
+  const L = {
+    n, goal, types, threat: Math.min(12, 1 + d * 0.45),
+    intro: { 2: '新敵人：橘色會預警後衝過來', 4: '新敵人：紫色會射擊，衝刺能打掉子彈', 6: '新敵人：綠色要撞兩次' }[n] || '',
+  };
+  if (goal === 'clear') {
+    const waves = Math.min(5, 2 + Math.floor(d / 4));
+    const per = Math.max(2, Math.min(10, 3 + Math.floor(d * 0.45)) - (ease ? 1 : 0));
+    L.waves = Array.from({ length: waves }, () => Array.from({ length: per }, pick));
+    // 衝刺次數：前面很寬鬆，後面要一次撞穿好幾隻才夠用
+    const hits = L.waves.flat().reduce((s, t) => s + ENEMY[t].hp, 0);
+    L.dashes = Math.ceil(hits * Math.max(0.9, 1.6 - d * 0.035) * (ease ? 1.3 : 1)) + 2;
+  } else if (goal === 'survive') {
+    L.time = Math.round((30 + Math.min(d, 30) * 0.5) * (ease ? 0.8 : 1));
+    L.dashes = Infinity;
+  } else {
+    L.combo = Math.min(15, 5 + Math.floor(d / 3)) - (ease ? 1 : 0);
+    L.dashes = Math.ceil(L.combo * 2.5 * (ease ? 1.3 : 1)) + 4;
+  }
+  L.dashes += buffLv * DASHES_PER_BUFF;
+  return L;
+}
+
+// 給玩家看的目標說明
+function goalText() {
+  if (LV.goal === 'clear') return `擊倒全部 ${LV.waves.flat().length} 隻敵人，衝刺 ${LV.dashes} 次以內`;
+  if (LV.goal === 'survive') return `撐過 ${LV.time} 秒`;
+  return `打出 ${LV.combo} 連擊，衝刺 ${LV.dashes} 次以內`;
+}
+// 敵人的兇猛程度：無盡模式看波數，關卡模式看關卡難度
+const threat = () => (levelMode ? LV.threat : Math.min(wave, 12));
+
 function resetGame() {
+  if (levelMode) {
+    LV = makeLevel(levelN, fails >= EASE_AFTER);
+    dashesLeft = LV.dashes;
+    maxHp = MAX_HP + boostHp;
+    hpLost = 0; levelT = 0; outT = 0;
+    won = false; continued = false; reported = false;
+  }
   player = {
     x: N / 2, y: N / 2, vx: 0, vy: 0, fx: 1, fy: 0,
-    hp: MAX_HP, charges: MAX_CHARGES, chargeT: 0, invuln: 0,
+    hp: maxHp, charges: MAX_CHARGES, chargeT: 0, invuln: 0,
     squash: 0, dashing: false, trailT: 0, dead: false,
   };
   enemies = []; bullets = []; spawns = []; particles = []; texts = []; rings = []; trails = [];
@@ -178,13 +259,14 @@ function release() {
 
 function tryDash(v) {
   const p = player;
-  if (p.charges <= 0) {
+  if (p.charges <= 0 || dashesLeft <= 0) {
     denyT = 0.35;
     sfx.deny();
     vibrate(20);
     return;
   }
   p.charges--;
+  dashesLeft--;
   const sp = DASH_MIN + (DASH_MAX - DASH_MIN) * v.power;
   p.vx = v.x * sp;
   p.vy = v.y * sp;
@@ -215,15 +297,30 @@ function buildWave(n) {
   return list;
 }
 
+// 關卡模式的「撐過時間」「打出連擊」沒有固定波數，敵人依關卡解鎖的種類一直出
+function levelWave() {
+  const count = Math.round(3 + LV.threat * 0.8);
+  return Array.from({ length: count }, () => LV.types[(Math.random() * LV.types.length) | 0]);
+}
+
 function startWave(n) {
   wave = n;
-  waveQueue = buildWave(n);
+  if (levelMode && LV.goal === 'clear') {
+    waveQueue = LV.waves[n - 1].slice();
+    if (n > 1) showBanner(`第 ${n}/${LV.waves.length} 波`, '');
+  } else if (levelMode) {
+    waveQueue = levelWave();
+  } else {
+    waveQueue = buildWave(n);
+    showBanner(`第 ${n} 波`, n === 1 ? '撞穿它們！' : '');
+  }
   spawnTimer = 0.4;
-  showBanner(`第 ${n} 波`, n === 1 ? '撞穿它們！' : '');
   sfx.wave();
 }
 
 function waveClear() {
+  if (levelMode && LV.goal === 'clear' && wave >= LV.waves.length) { winLevel(); return; }
+  if (levelMode && LV.goal !== 'clear') { nextWaveT = 0.6; return; }  // 持續出怪，不打斷節奏
   const bonus = wave * 100;
   score += bonus;
   scorePop = 1;
@@ -234,7 +331,7 @@ function waveClear() {
   rings.push(makeRing(player.x, player.y, 6, 1));
   sfx.clear();
   vibrate([10, 40, 10]);
-  if (wave % 3 === 0 && player.hp < MAX_HP) {
+  if (!levelMode && wave % 3 === 0 && player.hp < maxHp) {
     player.hp++;
     heartPop = 1;
     addText(player.x, player.y, '+1 ♥', '#ff8fa3', 22, 1.2);
@@ -256,14 +353,69 @@ function updateWaves(dt) {
     if (nextWaveT <= 0) startWave(wave + 1);
   } else if (waveQueue.length) {
     spawnTimer -= dt;
-    if (spawnTimer <= 0 && enemies.length + spawns.length < 3 + wave) {
+    if (spawnTimer <= 0 && enemies.length + spawns.length < 3 + Math.round(threat())) {
       spawns.push({ ...spawnPoint(), type: waveQueue.shift(), t: 0.9, max: 0.9 });
-      spawnTimer = Math.max(0.3, 1.1 - wave * 0.06);
+      spawnTimer = Math.max(0.3, 1.1 - threat() * 0.06);
       sfx.spawn();
     }
   } else if (!enemies.length && !spawns.length) {
     waveClear();
   }
+}
+
+// 每幀檢查關卡目標：過關、或衝刺用完失敗
+function updateLevel(dt) {
+  levelT += dt;
+  if (LV.goal === 'survive' && levelT >= LV.time) { winLevel(); return; }
+  if (LV.goal === 'combo' && combo >= LV.combo) { winLevel(); return; }
+  // 衝刺用完、球也停了，等一下下還沒達成目標就算失敗
+  if (dashesLeft <= 0 && !player.dashing) {
+    outT += dt;
+    if (outT >= OUT_GRACE) die('衝刺用完了');
+  } else outT = 0;
+}
+
+function levelStars() {
+  let s = 1;
+  if (hpLost === 0) s++;                                            // 沒受傷
+  if (LV.goal === 'survive' ? bestCombo >= 8 : dashesLeft >= LV.dashes * 0.25) s++;  // 衝刺還剩 1/4 以上
+  return s;
+}
+function levelProgress() {
+  if (won) return 1;
+  if (LV.goal === 'survive') return clamp(levelT / LV.time, 0, 1);
+  if (LV.goal === 'combo') return clamp(bestCombo / LV.combo, 0, 1);
+  const total = LV.waves.flat().length, left = waveQueue.length + enemies.length + spawns.length
+    + LV.waves.slice(wave).flat().length;
+  return clamp(1 - left / total, 0, 1);
+}
+
+function winLevel() {
+  won = true;
+  mode = 'won';
+  deadT = 1.4;
+  slowmo = 1.0;
+  aim.on = false;
+  for (const e of enemies) { e.dead = true; burst(e.x, e.y, 12, 16, ENEMY[e.type].color, 260, { kind: 'shard', life: 0.7, grav: 420, up: 120 }); }
+  spawns = [];
+  bullets = [];
+  rings.push(makeRing(player.x, player.y, 7, 1));
+  screenFlash('#ffffff', 0.4);
+  showBanner('過關！', '★'.repeat(levelStars()) + '☆'.repeat(3 - levelStars()), 1.6);
+  sfx.clear();
+  vibrate([20, 40, 20, 40, 60]);
+  report(true);
+}
+
+// 結果交給樂園（只在試驗場裡）；每一關只回報一次
+function report(pass) {
+  if (!levelMode || reported) return;
+  reported = true;
+  if (!labMode) return;
+  parent.postMessage({
+    type: 'lab:result', game: 'prism', level: levelN, pass, stars: pass ? levelStars() : 0,
+    progress: levelProgress(), durationSec: Math.round(levelT),
+  }, '*');
 }
 
 // ================= 實體 =================
@@ -341,7 +493,7 @@ function updateEnemy(e, dt) {
   const dx = player.x - e.x, dy = player.y - e.y;
   const d = Math.hypot(dx, dy) || 1;
   const ux = dx / d, uy = dy / d;
-  const lvl = Math.min(wave, 12);
+  const lvl = threat();
 
   switch (e.type) {
     case 'blob': {
@@ -474,8 +626,9 @@ function killEnemy(e) {
 
 function hurtPlayer(sx, sy) {
   const p = player;
-  if (p.invuln > 0 || p.dead) return;
+  if (p.invuln > 0 || p.dead || won) return;
   p.hp--;
+  hpLost++;
   p.invuln = 1.4;
   heartPop = 1;
   const dx = p.x - sx, dy = p.y - sy, d = Math.hypot(dx, dy) || 1;
@@ -493,9 +646,10 @@ function hurtPlayer(sx, sy) {
   if (p.hp <= 0) die();
 }
 
-function die() {
+function die(reason = '') {
   const p = player;
   p.dead = true;
+  failReason = reason;
   mode = 'dead';
   deadT = 1.1;
   slowmo = 1.0;
@@ -507,8 +661,7 @@ function die() {
   screenFlash('#ffffff', 0.5);
   sfx.die();
   vibrate(200);
-  if (run) run.end = performance.now();
-  if (score > best) {
+  if (!levelMode && score > best) {
     best = score;
     newBest = true;
     store.set('prism.best', best);
@@ -548,6 +701,7 @@ function updateWorld(dt) {
     }
   } else {
     if (mode === 'play') updateWaves(dt);
+    if (mode === 'play' && levelMode && !player.dead) updateLevel(dt);
     updatePlayer(dt);
 
     for (const s of spawns) {
@@ -642,7 +796,7 @@ function updateWorld(dt) {
 function update(rdt) {
   time += rdt;
   updateFx(rdt);
-  if (mode === 'dead' && !overShown) {
+  if ((mode === 'dead' || mode === 'won') && !overShown) {
     deadT -= rdt;
     if (deadT <= 0) showOver();
   }
@@ -1107,17 +1261,29 @@ function drawHUD() {
 
   if (mode !== 'title') {
     const top = safeTop + 14;
-    for (let k = 0; k < MAX_HP; k++) {
+    for (let k = 0; k < maxHp; k++) {
       const full = k < player.hp;
       heart(24 + k * 30, top + 12, 10 * (full ? 1 + heartPop * 0.35 : 1), full);
     }
 
     ctx.textAlign = 'center';
     popText(score.toLocaleString(), W / 2, top + 14, 30 * (1 + scorePop * 0.25), '#ffffff');
-    popText(`最佳 ${best.toLocaleString()}`, W / 2, top + 40, 12, 'rgba(255, 255, 255, 0.55)');
+    if (levelMode) popText(`第 ${levelN} 關`, W / 2, top + 40, 12, 'rgba(255, 255, 255, 0.55)');
+    else popText(`最佳 ${best.toLocaleString()}`, W / 2, top + 40, 12, 'rgba(255, 255, 255, 0.55)');
 
     ctx.textAlign = 'right';
-    popText(`第 ${wave} 波`, W - 16, top + 12, 15, 'rgba(255, 255, 255, 0.8)');
+    if (!levelMode) popText(`第 ${wave} 波`, W - 16, top + 12, 15, 'rgba(255, 255, 255, 0.8)');
+    else {
+      // 右上：目標進度；下面一行：剩下的衝刺次數（快用完時變紅）
+      const goal = LV.goal === 'clear' ? `敵人 ${Math.round(levelProgress() * LV.waves.flat().length)}/${LV.waves.flat().length}`
+        : LV.goal === 'survive' ? `剩 ${Math.max(0, Math.ceil(LV.time - levelT))} 秒`
+        : `連擊 ${Math.min(combo, LV.combo)}/${LV.combo}`;
+      popText(goal, W - 16, top + 12, 15, 'rgba(255, 255, 255, 0.85)');
+      if (dashesLeft !== Infinity) {
+        const low = dashesLeft <= 3;
+        popText(`衝刺 ${dashesLeft}`, W - 16, top + 36, low ? 17 + Math.sin(time * 10) * 1.5 : 15, low ? '#ff8fa3' : '#7ff6ff');
+      }
+    }
 
     if (combo >= 2) {
       ctx.textAlign = 'center';
@@ -1213,7 +1379,7 @@ const ui = {
   title: $('title'), titleBest: $('title-best'),
   over: $('over'), overScore: $('over-score'), overDetail: $('over-detail'), overBest: $('over-best'),
   revive: $('btn-revive'), retry: $('btn-retry'), start: $('btn-start'), mute: $('btn-mute'),
-  lab: $('btn-lab'),
+  lab: $('btn-lab'), overTitle: $('over-title'), titleSub: $('title-sub'),
 };
 
 ui.titleBest.textContent = best > 0 ? `最佳分數 ${best.toLocaleString()}` : '';
@@ -1222,42 +1388,54 @@ ui.mute.textContent = isMuted() ? '🔇' : '🔊';
 function startRun() {
   resetGame();
   mode = 'play';
-  run = { start: performance.now(), end: 0, reported: false };
+  if (levelMode) {
+    showBanner(`第 ${levelN} 關`, goalText(), 2.2);
+    nextWaveT = 2.0;                   // 先讓玩家看清楚目標再出怪
+  }
 }
 
-// ================= 試驗場模式 =================
-// park.html 用 iframe 載入 index.html?mode=lab。每局結束（重玩、完成或中途離開）時，
-// 用 postMessage 回傳共用介面的結果：{ durationSec, grade, score }。
-const labMode = new URLSearchParams(location.search).get('mode') === 'lab';
-let run = null;
-
-function finishRun() {
-  if (!labMode || !run || run.reported) return;
-  run.reported = true;
-  const durationSec = Math.round(((run.end || performance.now()) - run.start) / 1000);
-  const grade = wave >= 8 ? 'S' : wave >= 5 ? 'A' : wave >= 3 ? 'B' : 'C';
-  parent.postMessage({ type: 'lab:result', durationSec, grade, score }, '*');
+// 關卡模式的開場：標題畫面顯示這關的目標
+function showLevelTitle() {
+  LV = makeLevel(levelN, fails >= EASE_AFTER);
+  ui.titleBest.textContent = `第 ${levelN} 關：${goalText()}`;
+  ui.titleBest.classList.add('goal');
+  ui.titleSub.textContent = LV.intro;
+  ui.start.textContent = '開始';
 }
+if (levelMode) showLevelTitle();
 
+// 試驗場：完成或被樂園叫停時，先回報目前這關，再請樂園關掉
 if (labMode) {
   ui.lab.hidden = false;
-  ui.lab.addEventListener('click', () => {
-    finishRun();
+  const close = () => {
+    if (mode === 'play' || mode === 'dead') report(false);
     parent.postMessage({ type: 'lab:close' }, '*');
-  });
-  window.addEventListener('message', e => {
-    if (e.data?.type !== 'lab:quit') return;
-    finishRun();
-    parent.postMessage({ type: 'lab:close' }, '*');
-  });
+  };
+  ui.lab.addEventListener('click', close);
+  window.addEventListener('message', e => { if (e.data?.type === 'lab:quit') close(); });
 }
 
 function showOver() {
   overShown = true;
-  ui.overScore.textContent = score.toLocaleString();
-  ui.overDetail.textContent = `到達第 ${wave} 波 · 最高 ${bestCombo} 連擊 · 最佳 ${best.toLocaleString()}`;
-  ui.overBest.hidden = !newBest;
-  ui.revive.hidden = revived;
+  if (levelMode) {
+    // 過關：顯示星星和「下一關」；失敗：顯示進度、「看廣告續玩」和「再試一次」
+    const s = won ? levelStars() : 0;
+    ui.overTitle.textContent = won ? '過關！' : failReason || '倒下了';
+    ui.overScore.textContent = won ? '★'.repeat(s) + '☆'.repeat(3 - s) : `${Math.round(levelProgress() * 100)}%`;
+    ui.overDetail.textContent = won
+      ? `第 ${levelN} 關 · ${hpLost === 0 ? '沒受傷' : `受傷 ${hpLost} 次`} · ${dashesLeft === Infinity ? `最高 ${bestCombo} 連擊` : `剩 ${dashesLeft} 次衝刺`}`
+      : `第 ${levelN} 關 · ${goalText()}`;
+    ui.overBest.hidden = true;
+    ui.revive.hidden = won || continued;
+    ui.revive.textContent = `看廣告續玩（+${CONT_DASHES} 衝刺、回 2 顆心）`;
+    ui.retry.textContent = won ? '下一關' : '再試一次';
+  } else {
+    ui.overTitle.textContent = '倒下了';
+    ui.overScore.textContent = score.toLocaleString();
+    ui.overDetail.textContent = `到達第 ${wave} 波 · 最高 ${bestCombo} 連擊 · 最佳 ${best.toLocaleString()}`;
+    ui.overBest.hidden = !newBest;
+    ui.revive.hidden = revived;
+  }
   ui.revive.disabled = false;
   ui.over.classList.add('show');
 }
@@ -1270,7 +1448,12 @@ ui.start.addEventListener('click', () => {
 
 ui.retry.addEventListener('click', async () => {
   ui.over.classList.remove('show');
-  finishRun();
+  if (levelMode) {
+    if (won) { levelN++; fails = 0; }
+    else { report(false); fails++; }
+    boostHp = 0;                       // 道具只用在第一次挑戰
+    maxHp = MAX_HP;
+  }
   await Ads.onRunEnd();
   startRun();
 });
@@ -1280,11 +1463,12 @@ ui.revive.addEventListener('click', async () => {
   const ok = await Ads.showRewarded();
   if (!ok) { ui.revive.disabled = false; return; }
   revived = true;
+  continued = true;
   overShown = false;
-  if (run) run.end = 0;
   ui.over.classList.remove('show');
+  if (levelMode) { dashesLeft += CONT_DASHES; outT = 0; }
   const p = player;
-  Object.assign(p, { dead: false, hp: 2, invuln: 2, vx: 0, vy: 0, charges: MAX_CHARGES });
+  Object.assign(p, { dead: false, hp: Math.max(2, p.hp), invuln: 2, vx: 0, vy: 0, charges: MAX_CHARGES });
   heartPop = 1;
   mode = 'play';
   bullets = [];
@@ -1311,6 +1495,16 @@ document.addEventListener('visibilitychange', () => {
   aim.on = false;
   suspendAudio(document.hidden);
 });
+
+// 開發用：網址加上 ?debug 可以從主控台看狀態、用 prismDebug.dash(x, y) 直接朝世界座標方向衝刺
+if (params.has('debug')) {
+  window.prismDebug = {
+    get player() { return player; }, get enemies() { return enemies; }, get level() { return LV; },
+    get mode() { return mode; }, get dashesLeft() { return dashesLeft; },
+    dash(x, y, power = 1) { const l = Math.hypot(x, y) || 1; tryDash({ x: x / l, y: y / l, power }); },
+    step(sec) { for (let k = 0; k < sec * 60; k++) update(1 / 60); },   // 不靠畫面更新、直接快轉遊戲
+  };
+}
 
 // ================= 主迴圈 =================
 let last = performance.now();

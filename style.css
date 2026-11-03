@@ -72,6 +72,7 @@ h2 { margin: 0; font-size: 30px; font-weight: 900; }
 .sub { margin: -8px 0 4px; letter-spacing: 0.5em; font-size: 13px; opacity: 0.6; }
 .how { list-style: none; padding: 0; margin: 4px 0 10px; font-size: 15px; line-height: 1.9; opacity: 0.85; }
 .muted { margin: 0; font-size: 14px; opacity: 0.6; }
+.muted.goal { font-size: 16px; font-weight: 700; color: var(--accent); opacity: 1; }
 .score-big { font-size: 60px; font-weight: 900; line-height: 1; }
 .new-best { margin: 0; color: #ffe66d; font-weight: 800; }
 

@@ -16,11 +16,7 @@ const GUEST_SPEED = 1.2;            // 格/秒
 const SPAWN_EVERY = 7;              // 秒；再除以樂園吸引力（設施等級總和）
 const OFFLINE_CAP_H = 8;
 const OFFLINE_FULL_MIN = 10;        // 離線滿 8 小時 ≈ 樂園開著 10 分鐘的收入
-const RUN_CAP_SEC = 180;            // 試運轉的零件在 3 分鐘封頂
 const PARTS_SWAP = 3;               // 專屬零件不夠時，用其他零件 3:1 代替
-const GRADES = ['C', 'B', 'A', 'S'];
-const GRADE_FEE = { C: 1, B: 1.1, A: 1.25, S: 1.4 };  // 依「歷史最佳」評價，只升不降
-const GRADE_PARTS = { C: 1, B: 1.2, A: 1.5, S: 1.8 };
 const START_COINS = 120;
 const BUILD_SEC = { dev: 5, up: [8, 20] };   // 開發、升到 Lv2、升到 Lv3 的施工秒數
 const ADJ_BONUS = 0.1;              // 每有一座設施在旁邊（隔 1 格內），試運轉零件 +10%
@@ -32,7 +28,7 @@ const STAR_PARTS = 2;               // 第一次拿到第 2、3 顆星，每顆�
 const REPLAY_RATE = 0.25;           // 重玩已過的關：第一次過關的 25%
 const FAIL_RATE = 0.25;             // 失敗安慰獎：第一次過關的 25% × 完成進度
 const LEVEL_FEE = { every: 10, bonus: 0.05 };      // 每通過 10 關，這座設施收費 +5%
-const BOOST_SHIELD_COST = 40;       // 道具「開局護盾」的遊客幣價格
+const BOOST_COST = 40;              // 試運轉前可以買的道具（每款小遊戲各自定義效果）的遊客幣價格
 
 const RES = {
   coin: { icon: '🪙', name: '遊客幣' },
@@ -42,14 +38,16 @@ const RES = {
   shell: { icon: '🐚', name: '水池零件' },
 };
 
-// 每座設施佔 2×2 格，要放在草地上、旁邊有步道；入口和排隊位置依擺放自動算出來
+// 每座設施佔 2×2 格，要放在草地上、旁邊有步道；入口和排隊位置依擺放自動算出來。
+// 有小遊戲的設施都是關卡制：buff 說明設施等級在小遊戲裡給什麼加成，boost 是試運轉前可以買的道具
 const FACS = [
   {
     id: 'bumper', name: '彈射碰碰場', icon: '⚡', kind: 'bumper', x: 9, y: 10, spots: 6,
-    part: 'spark', game: '稜光衝刺', src: 'index.html?mode=lab',
+    part: 'spark', game: '稜光衝刺', src: 'index.html', levels: true,
+    buff: n => `每關多 ${n * 3} 次衝刺`, boost: '❤ 開局多 1 顆心',
     fee: 8, cap: [3, 4, 5], ride: 6, speed: 1, lv: 1,
     up: [{ coin: 150, part: 15 }, { coin: 450, part: 40 }],
-    desc: '霓虹碰碰車。試運轉就是玩「稜光衝刺」。',
+    desc: '霓虹碰碰車。試運轉就是玩「稜光衝刺」，一關一關往前推進。',
   },
   {
     id: 'carousel', name: '旋轉木馬', icon: '🎠', kind: 'carousel', x: 6, y: 10, spots: 6,
@@ -68,6 +66,7 @@ const FACS = [
   {
     id: 'marble', name: '鋼珠滑道', icon: '🔮', kind: 'marble', x: 13, y: 9, spots: 6,
     part: 'bead', game: '鋼球滑道', src: 'ball.html', levels: true,
+    buff: n => `每關開局 +${n} 護盾`, boost: '🛡 帶開局護盾',
     fee: 7, cap: [3, 4, 5], ride: 7, speed: 1, lv: 1,
     up: [{ coin: 180, part: 15 }, { coin: 480, part: 40 }],
     desc: '坐進透明大球滾下滑道。試運轉就是玩「鋼球滑道」，一關一關往前推進。',
@@ -76,7 +75,7 @@ const FACS = [
 ];
 for (const f of FACS) {
   Object.assign(f, {
-    w: 2, h: 2, grade: null, queue: [], riders: [], state: 'idle', t: 0, wait: 0, spin: 0, phase: 0, pop: 0, celebrate: false,
+    w: 2, h: 2, queue: [], riders: [], state: 'idle', t: 0, wait: 0, spin: 0, phase: 0, pop: 0, celebrate: false,
     build: null, door: null, queuePts: [], cleared: 0, stars: {}, fails: {},
   });
 }
@@ -94,7 +93,7 @@ const isoY = (x, y) => (x + y) * TH / 2;
 const fmt = n => Math.floor(n).toLocaleString();
 const capOf = f => f.cap[f.lv - 1];
 // 收費加成：關卡制看通關進度，舊的稜光衝刺看最佳評價；兩者都只升不降
-const progressBonus = f => (f.levels ? 1 + Math.floor(f.cleared / LEVEL_FEE.every) * LEVEL_FEE.bonus : f.grade ? GRADE_FEE[f.grade] : 1);
+const progressBonus = f => 1 + Math.floor(f.cleared / LEVEL_FEE.every) * LEVEL_FEE.bonus;
 const feeOf = f => Math.round(f.fee * (1 + 0.35 * (f.lv - 1)) * progressBonus(f));
 const totalStars = f => Object.values(f.stars).reduce((s, v) => s + v, 0);
 const maxLv = f => f.up.length + 1;
@@ -253,7 +252,7 @@ let visitors = 0, firstVisit = true, tested = false, lastSeen = Date.now();
     const d = s.fac?.[f.id];
     if (d) {
       Object.assign(f, {
-        lv: d.lv, grade: d.grade, x: d.x ?? f.x, y: d.y ?? f.y, build: d.build || null,
+        lv: d.lv, x: d.x ?? f.x, y: d.y ?? f.y, build: d.build || null,
         cleared: d.cleared || 0, stars: d.stars || {}, fails: d.fails || {},
       });
     }
@@ -272,7 +271,7 @@ function save() {
   store.set(SAVE_KEY, {
     res, visitors, tested, seen: Date.now(),
     fac: Object.fromEntries(FACS.filter(f => !f.locked).map(f => [f.id, {
-      lv: f.lv, grade: f.grade, x: f.x, y: f.y, build: f.build, cleared: f.cleared, stars: f.stars, fails: f.fails,
+      lv: f.lv, x: f.x, y: f.y, build: f.build, cleared: f.cleared, stars: f.stars, fails: f.fails,
     }])),
   });
 }
@@ -1595,7 +1594,7 @@ function statusLine(f) {
   if (f.locked) return '即將推出';
   if (f.build) return f.lv === 0 ? '開發中' : `Lv${f.lv} → Lv${f.lv + 1} 施工中`;
   if (f.lv === 0) return `未開發 · ${RES.coin.icon}${f.dev.coin}`;
-  return `Lv${f.lv} · 評價 ${f.game ? f.grade || '—' : '—'}`;
+  return f.levels ? `Lv${f.lv} · 第 ${f.cleared} 關` : `Lv${f.lv}`;
 }
 
 function wireBox(f, fx = f.x, fy = f.y, tint = null) {
@@ -1784,7 +1783,7 @@ function openPanel(f) {
   } else {
     $('p-sub').textContent = f.levels
       ? `Lv${f.lv}/${maxLv(f)} · 已通過 ${f.cleared} 關 · ★ ${totalStars(f)}`
-      : `Lv${f.lv}/${maxLv(f)} · 最佳評價 ${f.game ? f.grade || '尚未測試' : '—'}`;
+      : `Lv${f.lv}/${maxLv(f)}`;
     stats.push(['每位收費', `${RES.coin.icon}${feeOf(f)}`]);
     if (mode === 'park') stats.push(['一次可載', `${capOf(f)} 人`], ['排隊中', `${f.queue.length} 人`]);
     else if (f.levels) stats.push(['通關收費加成', `+${Math.round((progressBonus(f) - 1) * 100)}%`], ['相鄰加成', `+${Math.round(adj * ADJ_BONUS * 100)}%`]);
@@ -1793,8 +1792,8 @@ function openPanel(f) {
       // 關卡制：挑戰下一關、選道具、重玩已過的關
       const next = f.cleared + 1;
       acts.push(`<button class="pill" data-act="play" data-level="${next}">▶ 挑戰第 ${next} 關</button>`);
-      acts.push(`<label class="boost"><input type="checkbox" id="p-boost" ${boostOn && res.coin >= BOOST_SHIELD_COST ? 'checked' : ''} ${res.coin >= BOOST_SHIELD_COST ? '' : 'disabled'}>
-        🛡 帶開局護盾（${RES.coin.icon}${BOOST_SHIELD_COST}）</label>`);
+      acts.push(`<label class="boost"><input type="checkbox" id="p-boost" ${boostOn && res.coin >= BOOST_COST ? 'checked' : ''} ${res.coin >= BOOST_COST ? '' : 'disabled'}>
+        ${f.boost}（${RES.coin.icon}${BOOST_COST}）</label>`);
       if (f.cleared > 0) {
         const from = Math.max(1, f.cleared - 5);
         let strip = '';
@@ -1804,10 +1803,10 @@ function openPanel(f) {
         }
         acts.push(`<div class="levels">${strip}</div>`);
       }
-      acts.push(`<p class="note">設施 Lv${f.lv}：每關開局 +${f.lv - 1} 護盾。第一次過關拿 ${RES[f.part].icon}，重玩或失敗拿 25%</p>`);
+      acts.push(`<p class="note">設施 Lv${f.lv}：${f.lv > 1 ? f.buff(f.lv - 1) : '升級後小遊戲裡有加成'}。第一次過關拿 ${RES[f.part].icon}，重玩或失敗拿 25%</p>`);
     }
     if (mode === 'lab') {
-      if (!f.levels) acts.push(f.game ? `<button class="pill" data-act="test">▶ 試運轉：${f.game}</button>` : noGame);
+      if (!f.levels) acts.push(noGame);
       const c = costCheck(f);
       if (f.build) acts.push(building);
       else if (c) {
@@ -1816,7 +1815,6 @@ function openPanel(f) {
         if (c.short && res[c.swapFrom] > 0) acts.push(`<p class="note">${RES[f.part].icon}不夠的部分，可以用 ${RES[c.swapFrom].icon} ${PARTS_SWAP}:1 代替（需要 ${RES[c.swapFrom].icon}${c.swap}）</p>`);
       } else acts.push('<p class="note">已經是最高等級</p>');
       acts.push(moveBtn);
-      if (f.game && !f.levels) acts.push(`<p class="note">依表現拿到零件；評價只升不降。旁邊每多一座設施，試運轉零件 +${ADJ_BONUS * 100}%</p>`);
     } else {
       acts.push(building || '<button class="pill blue" data-act="lab">🔧 到試驗場改良</button>');
       acts.push(`<p class="note">${f.desc}</p>`);
@@ -1841,7 +1839,6 @@ $('p-actions').addEventListener('click', e => {
   play('tap');
   if (act === 'lab') { const keep = f; setMode('lab'); openPanel(keep); }
   if (act === 'up') doUpgrade(f);
-  if (act === 'test') openLab(f);
   if (act === 'play') openLab(f, Number(btn.dataset.level));
   if (act === 'move') startMove(f);
 });
@@ -1920,21 +1917,17 @@ $('btn-mute').addEventListener('click', () => {
   $('btn-mute').textContent = toggleMute() ? '🔇' : '🔊';
 });
 
-// ---- 試運轉：用 iframe 跑小遊戲，結束時收 { durationSec, grade, score } ----
+// ---- 試運轉：用 iframe 跑小遊戲的某一關，結束時收結果（格式見 README「小遊戲和樂園的介面」）----
 const frame = $('lab-frame');
 function openLab(f, level = 1) {
   labOpen = true;
   labSession = { f, results: [] };
   closePanel();
-  let src = f.src;
-  if (f.levels) {
-    // 關卡制：把關卡編號、設施等級給的護盾、道具、這關失敗過幾次（用來悄悄降難度）傳進去
-    let boost = 0;
-    if (boostOn && res.coin >= BOOST_SHIELD_COST) { res.coin -= BOOST_SHIELD_COST; boost = 1; }
-    boostOn = false;
-    src += `?mode=lab&level=${level}&shield=${f.lv - 1}&boost=${boost}&fails=${f.fails[level] || 0}`;
-  }
-  frame.src = src;
+  // 把關卡編號、設施等級加成、道具、這關失敗過幾次（用來悄悄降難度）傳進去
+  let boost = 0;
+  if (boostOn && res.coin >= BOOST_COST) { res.coin -= BOOST_COST; boost = 1; }
+  boostOn = false;
+  frame.src = `${f.src}?mode=lab&level=${level}&shield=${f.lv - 1}&boost=${boost}&fails=${f.fails[level] || 0}`;
   $('lab').classList.add('show');
   $('hint').hidden = true;
 }
@@ -1945,35 +1938,7 @@ function closeLab() {
   frame.src = 'about:blank';
   const { f, results } = labSession;
   labSession = null;
-  if (f.levels) { settleLevels(f, results); return; }
-  let gain = 0, best = null;
-  for (const r of results) {
-    if (r.durationSec < 5) continue;
-    const sec = Math.min(r.durationSec, RUN_CAP_SEC);
-    gain += Math.round((3 + sec / 10) * GRADE_PARTS[r.grade]);
-    if (!best || GRADES.indexOf(r.grade) > GRADES.indexOf(best)) best = r.grade;
-  }
-  if (!gain) { toast('這次沒有完成試運轉'); openPanel(f); return; }
-  const adj = neighbors(f).length;
-  gain = Math.round(gain * (1 + adj * ADJ_BONUS));
-  tested = true;
-  res[f.part] += gain;
-  const prev = f.grade;
-  const improved = !prev || GRADES.indexOf(best) > GRADES.indexOf(prev);
-  if (improved) f.grade = best;
-  f.pop = 1;
-  burst(isoX(f.x + 1, f.y + 1), isoY(f.x + 1, f.y + 1) - 40, 30, '#fff', 180, 'confetti');
-  play('build');
-  save();
-  showModal('試運轉報告', `
-    <span class="muted">${f.name} · ${results.length} 局</span>
-    <span class="big">${best}</span>
-    <span class="gain">${RES[f.part].icon} ${RES[f.part].name} +${gain}</span>
-    ${adj ? `<span class="muted">含相鄰設施加成 +${Math.round(adj * ADJ_BONUS * 100)}%</span><br>` : ''}
-    ${improved
-      ? `<span>最佳評價${prev ? `從 ${prev} ` : ''}提升到 <b>${f.grade}</b>：每位遊客付費 ×${GRADE_FEE[f.grade]}</span>`
-      : `<span class="muted">最佳評價維持 ${f.grade}（評價只升不降）</span>`}
-  `);
+  settleLevels(f, results);
 }
 // 關卡制的結算：第一次過關拿主要獎勵，重玩和失敗拿 25%（失敗再乘上完成進度）
 function settleLevels(f, results) {
